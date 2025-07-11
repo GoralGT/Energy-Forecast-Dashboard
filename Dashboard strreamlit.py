@@ -1,3 +1,7 @@
+import os
+# FIX 1: Force TensorFlow to use the CPU. This prevents CUDA errors and instability.
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,7 +10,6 @@ from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.ensemble import RandomForestRegressor
-import os
 import pydeck as pdk
 
 # --- Page Configuration ---
@@ -102,8 +105,17 @@ if data_raw is not None:
     st.sidebar.header("📅 Filters")
     min_date = data_engineered.index.min().date()
     max_date = data_engineered.index.max().date()
-    start_date = st.sidebar.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
+
+    # FIX 2: Set a smaller default date range to prevent freezing on load.
+    default_start_date = max_date - pd.Timedelta(days=30)
+    if default_start_date < min_date:
+        default_start_date = min_date
+
+    start_date = st.sidebar.date_input("Start Date", value=default_start_date, min_value=min_date, max_value=max_date)
     end_date = st.sidebar.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
+    
+    st.sidebar.info("💡 Tip: Selecting a smaller date range will improve app performance.")
+
     if start_date > end_date:
         st.sidebar.warning("Start date must be before end date.")
         st.stop()
@@ -111,7 +123,8 @@ if data_raw is not None:
     filtered_data = data_engineered.loc[str(start_date):str(end_date)]
 
     st.sidebar.header("📊 Aggregation")
-    agg_level = st.sidebar.radio("View by:", ["Hourly", "Daily", "Weekly"], horizontal=True)
+    # FIX 3: Default to "Daily" aggregation for better performance.
+    agg_level = st.sidebar.radio("View by:", ["Hourly", "Daily", "Weekly"], index=1, horizontal=True)
 
     st.sidebar.header("⚡ Tariff Controls")
     peak_rate = st.sidebar.slider("Peak Tariff (£/kWh)", 0.0, 1.00, 0.30, step=0.01)
