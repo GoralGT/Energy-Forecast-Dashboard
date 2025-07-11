@@ -18,9 +18,6 @@ st.set_page_config(
 st.title("⚡ Energy Consumption Forecast Dashboard")
 
 # --- Path Configuration and Model Mapping ---
-# FIX: Define BASE_DIR to make file paths relative to the script's location.
-# This is the key to fixing "File Not Found" errors when deploying or sharing.
-# It ensures the app always knows where to look for your files.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE_DIR, "powerconsumption.csv")
 
@@ -64,7 +61,6 @@ def feature_engineer(df):
     df_eng['hourly_cos'] = np.cos(2 * np.pi * df_eng['hour'] / 24)
     df_eng['is_weekend'] = (df_eng.index.dayofweek >= 5).astype(int)
     df_eng['daytype'] = np.where(df_eng['day_of_week'] < 5, 1, 0)
-    # Placeholder weather features
     df_eng['temperature'] = np.random.normal(22, 5, len(df_eng))
     df_eng['humidity'] = np.random.normal(60, 15, len(df_eng))
     df_eng['wind'] = np.random.normal(10, 5, len(df_eng))
@@ -139,24 +135,34 @@ if data_raw is not None:
     tabs = st.tabs(["📈 Forecast", "💷 Tariff", "📊 Summary", "🗺️ Map", "🔁 Compare Zones", "💡 Model Performance", "🧠 Feature Importance"])
     forecast_tab, tariff_tab, summary_tab, map_tab, compare_tab, explanation_tab, importance_tab = tabs
 
-    # --- Processing for the selected main zone ---
-    @st.cache_data(show_spinner=False)
-    def get_prediction(_data, zone_name):
-        model_path = os.path.join(BASE_DIR, f"lstm_model_{zone_name}_32f.keras")
-        if not os.path.exists(model_path):
-            return None, f"Model file not found: {model_path}", None
-        model = load_model(model_path)
-        X_seq, y_seq, scaler_y, idx, feature_names = prepare_sequences(_data, zone_name)
-        if model.input_shape[-1] != X_seq.shape[-1]:
-            return None, f"Feature mismatch! Model expects {model.input_shape[-1]}, got {X_seq.shape[-1]}.", None
-        pred_scaled = model.predict(X_seq)
-        pred_values = scaler_y.inverse_transform(pred_scaled)
-        actual_values = scaler_y.inverse_transform(y_seq)
-        results_df = pd.DataFrame({"Actual": actual_values.flatten(), "Predicted": pred_values.flatten()}, index=idx)
-        return results_df, None, feature_names
+    # --- OPTIMIZATION: Pre-calculate predictions for all zones ---
+    @st.cache_data(show_spinner="Generating all zone forecasts...")
+    def get_all_predictions(_data):
+        all_results = {}
+        for label, zone_name in MODEL_MAP.items():
+            model_path = os.path.join(BASE_DIR, f"lstm_model_{zone_name}_32f.keras")
+            if not os.path.exists(model_path):
+                all_results[label] = (None, f"Model file not found: {model_path}")
+                continue
+            
+            model = load_model(model_path)
+            X_seq, y_seq, scaler_y, idx, feature_names = prepare_sequences(_data, zone_name)
+            
+            if model.input_shape[-1] != X_seq.shape[-1]:
+                 all_results[label] = (None, f"Feature mismatch! Model expects {model.input_shape[-1]}, got {X_seq.shape[-1]}.")
+                 continue
 
-    with st.spinner(f"Generating forecast for {main_zone_label}..."):
-        main_results, error, feature_names = get_prediction(filtered_data.copy(), main_zone_name)
+            pred_scaled = model.predict(X_seq)
+            pred_values = scaler_y.inverse_transform(pred_scaled)
+            actual_values = scaler_y.inverse_transform(y_seq)
+            results_df = pd.DataFrame({"Actual": actual_values.flatten(), "Predicted": pred_values.flatten()}, index=idx)
+            all_results[label] = (results_df, None)
+        return all_results
+
+    all_zone_results = get_all_predictions(filtered_data.copy())
+    
+    # --- Process main selected zone from pre-calculated results ---
+    main_results, error = all_zone_results[main_zone_label]
 
     if error:
         st.error(error)
@@ -166,9 +172,13 @@ if data_raw is not None:
     main_results["error"] = main_results["Actual"] - main_results["Predicted"]
     main_results["Anomaly"] = abs(main_results["error"]) > (main_results["error"].std() * anomaly_std)
     
-    display_df = main_results.copy()
-    if agg_level == "Daily": display_df = display_df.resample("D").mean()
-    elif agg_level == "Weekly": display_df = display_df.resample("W").mean()
+    # --- Resample data based on sidebar selection ---
+    def resample_df(df, level):
+        if level == "Daily": return df.resample("D").mean()
+        if level == "Weekly": return df.resample("W").mean()
+        return df
+
+    display_df = resample_df(main_results.copy(), agg_level)
 
     # --- Display Tabs ---
     with forecast_tab:
@@ -210,7 +220,6 @@ if data_raw is not None:
         if st.button("Set Current as Baseline"):
             st.session_state.baseline_peak_rate, st.session_state.baseline_offpeak_rate = peak_rate, offpeak_rate
             st.success("Baseline tariffs updated!")
-            # UPDATE: st.experimental_rerun() is deprecated. Use st.rerun() instead.
             st.rerun()
         
         st.markdown("---")
@@ -298,21 +307,21 @@ if data_raw is not None:
         st.subheader(f"Compare {main_zone_label} with:")
         zones_to_compare = {label: name for label, name in MODEL_MAP.items() if name != main_zone_label}
         compare_labels = st.multiselect("Select zones to compare", list(zones_to_compare.keys()))
+        
         if compare_labels:
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=display_df.index, y=display_df["Actual"], name=main_zone_label, line=dict(color='#3366CC')))
+            # Plot main zone
+            main_compare_df = resample_df(main_results.copy(), agg_level)
+            fig2.add_trace(go.Scatter(x=main_compare_df.index, y=main_compare_df["Actual"], name=main_zone_label, line=dict(color='#3366CC')))
             
             color_palette = ['#109618', '#990099'] # Green, Purple
             for i, label in enumerate(compare_labels):
-                zone_name = zones_to_compare[label]
-                with st.spinner(f"Generating forecast for {label}..."):
-                    compare_results, compare_error, _ = get_prediction(filtered_data.copy(), zone_name)
+                # OPTIMIZATION: Use pre-calculated results instead of re-calculating
+                compare_results, compare_error = all_zone_results[label]
                 if compare_error:
                     st.warning(f"Could not load data for {label}: {compare_error}")
                 else:
-                    compare_display_df = compare_results.copy()
-                    if agg_level == "Daily": compare_display_df = compare_display_df.resample("D").mean()
-                    elif agg_level == "Weekly": compare_display_df = compare_display_df.resample("W").mean()
+                    compare_display_df = resample_df(compare_results.copy(), agg_level)
                     fig2.add_trace(go.Scatter(x=compare_display_df.index, y=compare_display_df["Actual"], name=label, line=dict(color=color_palette[i % len(color_palette)])))
             
             fig2.update_layout(title="Zone Comparison", height=500, yaxis_title="Consumption (kW)")
@@ -344,21 +353,17 @@ if data_raw is not None:
 
         @st.cache_data(show_spinner="Calculating feature importances...")
         def get_feature_importance(_data, _zone_name):
-            # We use a simpler, faster model (Random Forest) to estimate feature importance
-            # as doing this for the LSTM is very slow.
             cols_to_drop = list(MODEL_MAP.values())
             X = _data.drop(columns=cols_to_drop)
             y = _data[_zone_name]
             
-            # Train a surrogate model
             model = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
             model.fit(X, y)
             
-            # Get importances
             importance_df = pd.DataFrame({
                 'feature': X.columns,
                 'importance': model.feature_importances_
-            }).sort_values('importance', ascending=False).head(15) # Top 15
+            }).sort_values('importance', ascending=False).head(15)
             
             return importance_df
 
@@ -373,7 +378,6 @@ if data_raw is not None:
             title=f"Top 15 Most Important Features for {main_zone_label}",
             xaxis_title="Importance Score",
             yaxis_title="Feature",
-            yaxis={'categoryorder':'total ascending'} # Show most important at top
+            yaxis={'categoryorder':'total ascending'}
         )
         st.plotly_chart(fig_importance, use_container_width=True)
-
