@@ -5,7 +5,6 @@ import plotly.graph_objs as go
 from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
-from sklearn.inspection import permutation_importance
 from sklearn.ensemble import RandomForestRegressor
 import os
 import pydeck as pdk
@@ -19,7 +18,12 @@ st.set_page_config(
 st.title("⚡ Energy Consumption Forecast Dashboard")
 
 # --- Path Configuration and Model Mapping ---
+# FIX: Define BASE_DIR to make file paths relative to the script's location.
+# This is the key to fixing "File Not Found" errors when deploying or sharing.
+# It ensures the app always knows where to look for your files.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE_DIR, "powerconsumption.csv")
+
 MODEL_MAP = {
     "Zone 1 – Marina Smir (Commercial/Touristic)": "PowerConsumption_Zone1",
     "Zone 2 – Boussafou (Residential)": "PowerConsumption_Zone2",
@@ -60,6 +64,7 @@ def feature_engineer(df):
     df_eng['hourly_cos'] = np.cos(2 * np.pi * df_eng['hour'] / 24)
     df_eng['is_weekend'] = (df_eng.index.dayofweek >= 5).astype(int)
     df_eng['daytype'] = np.where(df_eng['day_of_week'] < 5, 1, 0)
+    # Placeholder weather features
     df_eng['temperature'] = np.random.normal(22, 5, len(df_eng))
     df_eng['humidity'] = np.random.normal(60, 15, len(df_eng))
     df_eng['wind'] = np.random.normal(10, 5, len(df_eng))
@@ -205,7 +210,8 @@ if data_raw is not None:
         if st.button("Set Current as Baseline"):
             st.session_state.baseline_peak_rate, st.session_state.baseline_offpeak_rate = peak_rate, offpeak_rate
             st.success("Baseline tariffs updated!")
-            st.experimental_rerun()
+            # UPDATE: st.experimental_rerun() is deprecated. Use st.rerun() instead.
+            st.rerun()
         
         st.markdown("---")
         st.subheader("What-If: Peak-to-Off-Peak Shift Simulation")
@@ -250,7 +256,6 @@ if data_raw is not None:
             fig_daily.update_layout(xaxis_title="Day of Week", yaxis_title="Average Consumption (kW)")
             st.plotly_chart(fig_daily, use_container_width=True)
 
-        # --- NEW: Cross-Zone Comparison Table ---
         st.markdown("---")
         st.subheader("Cross-Zone Comparison")
         summary_data = []
